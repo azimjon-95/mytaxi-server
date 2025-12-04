@@ -1,5 +1,7 @@
 const Order = require("../models/Order");
+const User = require("../models/clinetModel");
 const response = require("../utils/response");
+require('dotenv').config();
 
 // distance va ETA helpers
 function calculateDistance(lat1, lon1, lat2, lon2) {
@@ -25,24 +27,121 @@ class OrderController {
         this.io = io;
     }
 
+
+    // Client uchun active orderni kuzatish
+    async watchActiveOrder(req, res) {
+        try {
+            const { clientId } = req.params;
+            if (!clientId) return response.warning(res, "ClientId is required");
+
+            // Redis cache tekshirish
+            const cachedOrder = await this.redisClient.get(`active_order:${clientId}`);
+
+            if (cachedOrder && cachedOrder !== "null") {
+                return response.success(res, {
+                    message: "Active order fetched from cache",
+                    activeOrder: JSON.parse(cachedOrder),
+                    status: JSON.parse(cachedOrder).status
+                });
+            }
+
+            // MongoDB fallback
+            const order = await Order.findOne({
+                clientId,
+                status: { $in: ["waiting", "driver_assigned", "on_the_car"] }
+            })
+                .sort({ createdAt: -1 })
+                .populate("clientId");
+
+            if (!order) {
+                return response.success(res, {
+                    message: "No active order found",
+                    activeOrder: null,
+                    status: false
+                });
+            }
+
+            // Redis ga saqlash
+            await this.redisClient.set(
+                `active_order:${clientId}`,
+                JSON.stringify(order),
+                { EX: 60 * 5 }
+            );
+
+            return response.success(res, {
+                message: "Active order fetched from database",
+                activeOrder: order,
+                status: true
+            });
+
+        } catch (err) {
+            console.log(err);
+            return response.serverError(res, err.message);
+        }
+    }
+
+
     // CREATE order
     async create(req, res) {
         try {
+            const { when } = req.body;
+
+            // Boshlang‘ich status va timeline
+            let initialStatus = "created";
+            let timeline = [{ stage: "created", timestamp: new Date() }];
+
+            if (when === "waiting") {
+                initialStatus = "waiting";
+                timeline = [{ stage: "waiting", timestamp: new Date() }];
+            }
+
             const order = new Order({
                 ...req.body,
-                status: "created",
+                status: initialStatus,
                 availableDrivers: [],
-                timeline: [{ stage: "created", timestamp: new Date() }]
+                timeline,
             });
 
             await order.save();
+
+            // Redis-ga saqlash (1 soatga)
+            if (req.body.clientId) {
+                await this.redisClient.set(
+                    `active_order:${req.body.clientId}`,
+                    JSON.stringify(order),
+                    "EX",
+                    60 * 60 // 1 soat
+                );
+            }
+
+            // Socket.io orqali xabar yuborish
             this.io.emit("new_order", order);
 
             return response.created(res, "Order created", order);
         } catch (err) {
+            console.error("Create order error:", err);
             return response.error(res, err.message);
         }
     }
+
+    // async create(req, res) {
+    //     try {
+    //         const order = new Order({
+    //             ...req.body,
+    //             status: "created",
+    //             availableDrivers: [],
+    //             timeline: [{ stage: "created", timestamp: new Date() }]
+    //         });
+    //         console.log(order);
+    //         return
+    //         await order.save();
+    //         this.io.emit("new_order", order);
+
+    //         return response.created(res, "Order created", order);
+    //     } catch (err) {
+    //         return response.error(res, err.message);
+    //     }
+    // }
 
     // GET all orders
     async getAll(req, res) {
@@ -100,6 +199,7 @@ class OrderController {
             return response.error(res, err.message);
         }
     }
+
 
     // Update the meter for an order
     async updateMeter(req, res) {

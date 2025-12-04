@@ -12,7 +12,7 @@ module.exports = (redisClient, io) => {
     publicRouter.get("/client/:phone", controller.getUserByPhone);
     publicRouter.post("/client/login", controller.loginWithPin);
     // ========================================================
-    publicRouter.post("/orders", OrderCtrl.create);
+    publicRouter.post("/orders", (req, res) => OrderCtrl.create(req, res));
     publicRouter.get("/orders", OrderCtrl.getAll);
     publicRouter.get("/orders/:id", OrderCtrl.getById);
     publicRouter.put("/orders/:id", OrderCtrl.update);
@@ -27,7 +27,7 @@ module.exports = (redisClient, io) => {
     protectedRouter.post("/orders/start-meter", OrderCtrl.startMeter);
     protectedRouter.post("/orders/complete", OrderCtrl.completeOrder);
     protectedRouter.post("/orders/update-meter", OrderCtrl.updateMeter);
-
+    protectedRouter.get("/orders/live/:clientId", (req, res) => OrderCtrl.watchActiveOrder(req, res));
 
     // Qo‘shimcha ro‘yxatlar (Admin panel uchun)
     // protectedRouter.get("/drivers/available", OrderCtrl.getAvailableDrivers);

@@ -1,6 +1,19 @@
 version: "3.9"
 
 services:
+  backend:
+    build: .
+    container_name: mytaxi_backend
+    restart: always
+    ports:
+      - "5050:5050"
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    # Agar Mongo konteyneringiz bo'lsa, uni ham qo'shing:
+    # - mongo
+
   redis:
     image: redis:7
     container_name: redis_server
