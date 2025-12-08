@@ -28,6 +28,7 @@ class UserController {
 
             // SOCKET.IO
             if (this.io) this.io.emit("user:created", user);
+            console.log(user);
 
             return response.created(res, "Foydalanuvchi yaratildi", user);
         } catch (err) {
@@ -119,23 +120,38 @@ class UserController {
         try {
             const { phone } = req.params;
 
-            if (this.redisClient) {
-                const cached = await this.redisClient.get(`user:${phone}`);
-                if (cached) return response.success(res, "OK", JSON.parse(cached));
+            if (!phone) {
+                // DOMException o'rniga oddiy Error
+                throw new Error("Phone number is required");
             }
 
-            const user = await User.findOne({ phone });
-            if (!user) return response.notFound(res, "Foydalanuvchi topilmadi");
+            // Redis cache tekshirish
+            if (this.redisClient) {
+                const cached = await this.redisClient.get(`user:${phone}`);
+                if (cached) {
+                    return response.success(res, "OK", JSON.parse(cached));
+                }
+            }
 
+            // MongoDB dan olish
+            const user = await User.findOne({ phone }).lean(); // lean() => oddiy JS obyekt
+            if (!user) {
+                return response.notFound(res, "Foydalanuvchi topilmadi");
+            }
+
+            // Redis ga saqlash
             if (this.redisClient) {
                 await this.redisClient.set(`user:${phone}`, JSON.stringify(user));
             }
 
             return response.success(res, "OK", user);
+
         } catch (err) {
-            return response.serverError(res, err.message);
+            console.error("getUserByPhone error:", err);
+            return response.serverError(res, err.message || "Internal server error");
         }
     };
+
 
     // UPDATE user
     updateUser = async (req, res) => {

@@ -1,6 +1,8 @@
 const Order = require("../models/Order");
-const User = require("../models/clinetModel");
+const Driver = require("../models/driverModel");
 const response = require("../utils/response");
+const mongoose = require("mongoose");
+const axios = require('axios');
 require('dotenv').config();
 
 // distance va ETA helpers
@@ -26,9 +28,199 @@ class OrderController {
         this.redisClient = redisClient;
         this.io = io;
     }
+    async getAvailableDrivers(req, res) {
+        try {
+            const { clId: clientId, orId: orderId } = req.params;
+            // console.log(clientId, orderId);
 
 
-    // Client uchun active orderni kuzatish
+            if (!clientId || !mongoose.Types.ObjectId.isValid(clientId)) {
+                return response.notFound(res, "clientId noto‘g‘ri yoki berilmagan");
+            }
+
+
+            const redisKey = `active_order:${orderId}`;
+            let orderData = null;
+
+            // 1️⃣ REDISDAN O‘QISH
+            let redisData = await this.redisClient.get(redisKey);
+            if (redisData) {
+                orderData = JSON.parse(redisData);
+            } else {
+                // 2️⃣ MONGO DB'DAN O‘QISH
+                const order = await Order.findOne({
+                    _id: orderId,
+                    clientId: new mongoose.Types.ObjectId(clientId)
+                }).select("-__v");
+
+                if (!order) {
+                    return response.notFound(res, "Order topilmadi yoki clientId mos emas");
+                }
+
+                orderData = order.toObject();
+
+                // Redisga saqlash
+                await this.redisClient.setEx(redisKey, 30, JSON.stringify(orderData));
+            }
+
+
+            // 3️⃣ DRIVER BORLIGINI TEKSHIRISH
+            // DRIVER ASSIGNED HOLATI
+            if (orderData?.status === "driver_assigned") {
+
+                const driverId = orderData?.driver?.driverId;
+
+                // DriverId string bo‘lsagina DB dan izlaymiz
+                const driver = (driverId && mongoose.Types.ObjectId.isValid(driverId))
+                    ? await Driver.findById(driverId).select("-__v")
+                    : null;
+
+                const driverInfo = driver ? {
+                    _id: driver._id,
+                    firstName: driver.firstName,
+                    lastName: driver.lastName,
+                    phoneNumber: driver.phoneNumber,
+                    car: driver.car,
+                    birthDate: driver.birthDate,
+                    balance: driver.balance,
+                    isActive: driver.isActive,
+                } : null;
+
+                const responseData = {
+                    status: "driver",
+                    driver: {
+                        ...orderData.driver,
+                        driverInfo
+                    },
+                    availableDrivers: []
+                };
+
+                this.io.emit("availableDriversUpdate", responseData);
+                return response.success(res, "Driver assigned", responseData);
+            }
+
+            // 4️⃣ AGAR DRIVER YO‘Q → availableDrivers qaytadi
+            let availableDrivers = orderData.availableDrivers || [];
+
+            // Har bir driverId ni find orqali to‘ldirish
+            for (let i = 0; i < availableDrivers.length; i++) {
+                if (availableDrivers[i].driverId) {
+                    const driver = await Driver.findById(availableDrivers[i].driverId).select("-__v");
+                    if (driver) {
+                        availableDrivers[i].driverId = {
+                            _id: driver._id,
+                            firstName: driver.firstName,
+                            lastName: driver.lastName,
+                            phoneNumber: driver.phoneNumber,
+                            car: driver.car,
+                            birthDate: driver.birthDate,
+                            balance: driver.balance,
+                            isActive: driver.isActive,
+                        };
+                    }
+                }
+            }
+
+            const responseData = {
+                status: "availableDrivers",
+                availableDrivers,
+                driver: null
+            };
+
+            this.io.emit("availableDriversUpdate", responseData);
+            return response.success(res, "Available drivers list", responseData);
+
+        } catch (err) {
+            console.error("getAvailableDrivers ERROR:", err);
+            return response.serverError(res, "Server xatosi");
+        }
+    }
+
+    async assignDriverByClient(req, res) {
+        try {
+            const { orderId, driverId, driverLocation, clientLocation } = req.body;
+
+            if (!orderId || !driverId || !driverLocation || !clientLocation) {
+                return response.error(res, "Missing required fields");
+            }
+
+            // 1️⃣ ORDER REDISDAN TEKSHIRILADI
+            let activeOrder = await this.redisClient.get(`active_order:${orderId}`);
+            if (activeOrder) {
+                activeOrder = JSON.parse(activeOrder);
+            } else {
+                // Redis’da topilmasa MongoDB’dan olish
+                const orderFromDB = await Order.findById(orderId);
+                if (!orderFromDB) return response.notFound(res, "Order not found from Redis and DB");
+
+                activeOrder = orderFromDB.toObject();
+
+                // Redis’ga saqlash (expire vaqti 30 daqiqa, ixtiyoriy)
+                await this.redisClient.set(
+                    `active_order:${orderId}`,
+                    JSON.stringify(activeOrder),
+                    "EX",
+                    1800
+                );
+            }
+
+            // 2️⃣ MASOFA VA ETA HISOBLASH (OSRM)
+            const startLocation = driverLocation;
+            const endLocation = clientLocation;
+            const url = `${process.env.OSRM_URL}/route/v1/driving/${startLocation.longitude},${startLocation.latitude};${endLocation.longitude},${endLocation.latitude}?overview=false`;
+
+            // const { data } = await axios.get(url);
+            // if (!data?.routes?.length) {
+            //     return response.error(res, "Cannot calculate route");
+            // }
+
+            const route = [];
+            const distance = Number((route.distance / 1000).toFixed(1));  // km
+            const eta = Math.round(route.duration / 60); // minutes
+
+            // 3️⃣ DRIVER MA'LUMOTINI DB DAN OLISH
+            const driver = await Driver.findById(driverId);
+            if (!driver) return response.notFound(res, "Driver not found");
+
+            // 5️⃣ AVAILABLE DRIVERS GA QO‘SHISH
+            const newDriver = {
+                driverId,
+                modelName: driver.car ? `${driver.car.make} ${driver.car.modelName}` : "Unknown",
+                plateNumber: driver.car?.plateNumber || "Unknown",
+                color: driver.car?.color || "Unknown",
+                phone: driver.phone,
+                distance: 1,
+                eta: 3,
+                timestamp: new Date(),
+            };
+
+            // MongoDB order’ga qo‘shish
+            const order = await Order.findById(orderId);
+            order.availableDrivers.push(newDriver);
+            await order.save();
+
+            const populatedOrder = await Order.findById(orderId)
+                .populate({
+                    path: 'availableDrivers.driverId',
+                });
+            // Redis ham yangilash
+            await this.redisClient.set(
+                `active_order:${orderId}`,
+                JSON.stringify(order.toObject()),
+                "EX",
+                1800
+            );
+
+            this.io.emit("availableDriversUpdate", populatedOrder);
+
+            return response.success(res, "Driver added", newDriver);
+
+        } catch (err) {
+            console.error("ADD DRIVER ERROR:", err);
+            return response.serverError(res, "Server Error", err.message);
+        }
+    }
+
     async watchActiveOrder(req, res) {
         try {
             const { clientId } = req.params;
@@ -37,11 +229,11 @@ class OrderController {
             // Redis cache tekshirish
             const cachedOrder = await this.redisClient.get(`active_order:${clientId}`);
 
-            if (cachedOrder && cachedOrder !== "null") {
+            if (JSON.parse(cachedOrder) && JSON.parse(cachedOrder) !== "null") {
                 return response.success(res, {
                     message: "Active order fetched from cache",
                     activeOrder: JSON.parse(cachedOrder),
-                    status: JSON.parse(cachedOrder).status
+                    status: true
                 });
             }
 
@@ -55,7 +247,7 @@ class OrderController {
 
             if (!order) {
                 return response.success(res, {
-                    message: "No active order found",
+                    message: "No active order found>>>",
                     activeOrder: null,
                     status: false
                 });
@@ -80,6 +272,70 @@ class OrderController {
         }
     }
 
+    // 🚕 DRAIVER TANLASH
+    assignDriver = async (req, res) => {
+        try {
+            const { orderId, driverId } = req.body;
+
+
+            if (!orderId || !driverId) {
+                return response.error(res, "orderId va driverId majburiy!");
+            }
+
+            // 1️⃣ ORDERNI TOPAMIZ
+            const order = await Order.findById(orderId);
+            if (!order) return response.notFound(res, "Order topilmadi");
+
+            // 2️⃣ availableDrivers ichidan tanlangan drayverni topish
+            const selectedDriver = order.availableDrivers.find(
+                (d) => String(d.driverId) === driverId
+            );
+
+            if (!selectedDriver) {
+                return response.notFound(res, "Bu driver availableDrivers ichida yo‘q");
+            }
+
+            // 3️⃣ order.driver ga ko‘chiramiz
+            order.driver = {
+                driverId: selectedDriver.driverId,
+                modelName: selectedDriver.modelName,
+                carNumber: selectedDriver.carNumber,
+                color: selectedDriver.color,
+                phone: selectedDriver.phone,
+                distance: selectedDriver.distance,
+                eta: selectedDriver.eta,
+            };
+
+            // 4️⃣ Order statusini o‘zgartiramiz
+            order.status = "driver_assigned";
+
+            // 5️⃣ Timelinega yozamiz
+            order.timeline.push({
+                stage: "driver_assigned",
+                driverId: selectedDriver.driverId,
+            });
+
+            // 6️⃣ Save qilamiz
+            const savedOrder = await order.save();
+
+            // 7️⃣ Redisga real-time uchun yozamiz
+            await this.redisClient.set(
+                `order:${orderId}`,
+                JSON.stringify(savedOrder),
+                { EX: 60 * 60 } // 1 soat
+            );
+
+            // 8️⃣ Socket orqali client va drayverga yuborish
+            this.io.to(order.clientId.toString()).emit("availableDriversUpdate", savedOrder);
+            this.io.to(driverId.toString()).emit("youAreAssigned", savedOrder);
+
+            return response.success(res, "Driver muvaffaqiyatli assign qilindi", savedOrder);
+
+        } catch (err) {
+            console.log(err);
+            return response.serverError(res, "Server xatosi", err.message);
+        }
+    };
 
     // CREATE order
     async create(req, res) {
@@ -105,9 +361,9 @@ class OrderController {
             await order.save();
 
             // Redis-ga saqlash (1 soatga)
-            if (req.body.clientId) {
+            if (order._id) {
                 await this.redisClient.set(
-                    `active_order:${req.body.clientId}`,
+                    `active_order:${order._id}`,
                     JSON.stringify(order),
                     "EX",
                     60 * 60 // 1 soat
@@ -124,25 +380,6 @@ class OrderController {
         }
     }
 
-    // async create(req, res) {
-    //     try {
-    //         const order = new Order({
-    //             ...req.body,
-    //             status: "created",
-    //             availableDrivers: [],
-    //             timeline: [{ stage: "created", timestamp: new Date() }]
-    //         });
-    //         console.log(order);
-    //         return
-    //         await order.save();
-    //         this.io.emit("new_order", order);
-
-    //         return response.created(res, "Order created", order);
-    //     } catch (err) {
-    //         return response.error(res, err.message);
-    //     }
-    // }
-
     // GET all orders
     async getAll(req, res) {
         try {
@@ -153,7 +390,8 @@ class OrderController {
 
             const orders = await Order.find()
                 .populate("clientId", "name phone")
-                .populate("driver.driverId", "name phone vehicle");
+                .populate("availableDrivers.driverId", "model carNumber color phone")
+                .populate("driver.driverId", "model carNumber color phone");
 
             await this.redisClient.set("orders:all", JSON.stringify(orders), { EX: 60 * 5 });
             return response.success(res, "Orders fetched", orders);
@@ -162,10 +400,10 @@ class OrderController {
         }
     }
 
-    // Driver selects an order
+    // Driver selects an order  // Del
     async selectDriver(req, res) {
         try {
-            const { orderId, driverId, name, phone, vehicle, latitude, longitude } = req.body;
+            const { orderId, driverId, model, carNumber, color, phone, latitude, longitude } = req.body;
 
             const order = await Order.findById(orderId);
             if (!order) return response.notFound(res, "Order not found");
@@ -184,7 +422,7 @@ class OrderController {
 
             const eta = calculateETA(distance);
 
-            const driverInfo = { driverId, name, phone, vehicle, distance, eta };
+            const driverInfo = { driverId, model, carNumber, color, phone, distance, eta };
 
             order.availableDrivers.push(driverInfo);
             await order.save();
@@ -277,42 +515,6 @@ class OrderController {
         }
     }
 
-
-    // Client assigns a driver from availableDrivers
-    async assignDriverByClient(req, res) {
-        try {
-            const { orderId, driverId } = req.body;
-
-            const order = await Order.findById(orderId);
-            if (!order) return response.notFound(res, "Order not found");
-
-            const selected = order.availableDrivers.find(d => d.driverId.toString() === driverId);
-            if (!selected) return response.warning(res, "Driver not found");
-
-            order.driver = selected;
-            order.status = "driver_assigned";
-
-            order.timeline.push({
-                stage: "driver_assigned",
-                driverId,
-                timestamp: new Date()
-            });
-
-            await order.save();
-
-            this.io.emit("order_driver_assigned", {
-                orderId,
-                driver: order.driver,
-                status: order.status
-            });
-
-            return response.success(res, "Driver assigned", order.driver);
-        } catch (err) {
-            return response.error(res, err.message);
-        }
-    }
-
-
     // GET by ID
     async getById(req, res) {
         try {
@@ -323,8 +525,8 @@ class OrderController {
 
             const order = await Order.findById(id)
                 .populate("clientId", "name phone")
-                .populate("availableDrivers.driverId", "name phone vehicle")
-                .populate("driver.driverId", "name phone vehicle");
+                .populate("availableDrivers.driverId", "model carNumber color phone")
+                .populate("driver.driverId", "model carNumber color phone");
 
             if (!order) return response.notFound(res, "Order not found");
 

@@ -6,7 +6,7 @@ services:
     container_name: mytaxi_backend
     restart: always
     ports:
-      - "5050:5050"
+      - "5000:5000"
     env_file:
       - .env
     depends_on:

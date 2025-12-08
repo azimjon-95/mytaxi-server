@@ -11,7 +11,7 @@ const soket = require("./socket");
 
 // Express ilova
 const app = express();
-const PORT = process.env.PORT || 5050;
+const PORT = process.env.PORT || 5000;
 
 // ---- MIDDLEWARE ----
 const corsOptions = {
@@ -23,6 +23,7 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(helmet());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // ---- REDIS ----
 const redisClient = redis.createClient({ url: process.env.REDIS_URL });

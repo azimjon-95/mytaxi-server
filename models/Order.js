@@ -16,9 +16,10 @@ const orderSchema = new mongoose.Schema({
     availableDrivers: [
         {
             driverId: { type: mongoose.Schema.Types.ObjectId, ref: "Driver" },
-            name: { type: String },
+            modelName: { type: String },
+            carNumber: { type: String },
+            color: { type: String },
             phone: { type: String },
-            vehicle: { type: String },
             distance: { type: Number },  // mashinadan mijozgacha km
             eta: { type: Number },       // taxminiy yetib borish vaqti (min)
             timestamp: { type: Date, default: Date.now },
@@ -27,11 +28,12 @@ const orderSchema = new mongoose.Schema({
 
     driver: {
         driverId: { type: mongoose.Schema.Types.ObjectId, ref: "Driver" },
-        name: { type: String },
+        modelName: { type: String },
+        carNumber: { type: String },
+        color: { type: String },
         phone: { type: String },
-        vehicle: { type: String },
-        distance: { type: Number }, // mijozga masofa
-        eta: { type: Number },      // taxminiy yetib borish vaqti
+        distance: { type: Number },  // mashinadan mijozgacha km
+        eta: { type: Number },       // taxminiy yetib borish vaqti (min)
     },
 
     traveledDistance: { type: Number, default: 0 }, // km hisoblangan masofa
