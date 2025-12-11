@@ -72,8 +72,7 @@ class UserController {
 
             // PIN to‘g‘ri bo‘lsa → token yaratiladi
             if (user.pin === pin) {
-                console.log(user);
-                console.log("JWT_SECRET:", process.env.JWT_SECRET);
+
                 const token = jwt.sign(
                     { id: user._id, phone: user.phone },
                     process.env.JWT_SECRET,

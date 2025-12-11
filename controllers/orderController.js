@@ -31,46 +31,50 @@ class OrderController {
     async getAvailableDrivers(req, res) {
         try {
             const { clId: clientId, orId: orderId } = req.params;
-            // console.log(clientId, orderId);
-
 
             if (!clientId || !mongoose.Types.ObjectId.isValid(clientId)) {
                 return response.notFound(res, "clientId noto‘g‘ri yoki berilmagan");
             }
 
-
             const redisKey = `active_order:${orderId}`;
             let orderData = null;
 
             // 1️⃣ REDISDAN O‘QISH
-            let redisData = await this.redisClient.get(redisKey);
+            const redisData = await this.redisClient.get(redisKey);
             if (redisData) {
                 orderData = JSON.parse(redisData);
             } else {
                 // 2️⃣ MONGO DB'DAN O‘QISH
+                const allowedStatuses = ["waiting", "driver_assigned", "on_the_car", "completed"];
+
                 const order = await Order.findOne({
                     _id: orderId,
-                    clientId: new mongoose.Types.ObjectId(clientId)
+                    clientId: new mongoose.Types.ObjectId(clientId),
+                    status: { $in: allowedStatuses }  // 🔥 faqat siz aytgan statuslar
                 }).select("-__v");
 
+                // 🔥 Order topilmasa — MAIN holatni qaytaramiz
                 if (!order) {
-                    return response.notFound(res, "Order topilmadi yoki clientId mos emas");
+                    const responseData = {
+                        status: "main",
+                        driver: {},
+                        availableDrivers: []
+                    };
+
+                    this.io.emit("availableDriversUpdate", responseData);
+                    return response.success(res, "Order topilmadi", responseData);
                 }
 
                 orderData = order.toObject();
 
-                // Redisga saqlash
                 await this.redisClient.setEx(redisKey, 30, JSON.stringify(orderData));
             }
+            console.log(orderData);
 
-
-            // 3️⃣ DRIVER BORLIGINI TEKSHIRISH
-            // DRIVER ASSIGNED HOLATI
+            // 3️⃣ DRIVER ASSIGNED BO‘LSA
             if (orderData?.status === "driver_assigned") {
-
                 const driverId = orderData?.driver?.driverId;
 
-                // DriverId string bo‘lsagina DB dan izlaymiz
                 const driver = (driverId && mongoose.Types.ObjectId.isValid(driverId))
                     ? await Driver.findById(driverId).select("-__v")
                     : null;
@@ -88,10 +92,7 @@ class OrderController {
 
                 const responseData = {
                     status: "driver",
-                    driver: {
-                        ...orderData.driver,
-                        driverInfo
-                    },
+                    driver: { ...orderData.driver, driverInfo },
                     availableDrivers: []
                 };
 
@@ -99,27 +100,29 @@ class OrderController {
                 return response.success(res, "Driver assigned", responseData);
             }
 
-            // 4️⃣ AGAR DRIVER YO‘Q → availableDrivers qaytadi
-            let availableDrivers = orderData.availableDrivers || [];
+            // 4️⃣ DRIVER YO‘Q — availableDrivers qaytariladi
+            const availableDrivers = await Promise.all(
+                (orderData.availableDrivers || []).map(async d => {
+                    if (!d.driverId) return d;
 
-            // Har bir driverId ni find orqali to‘ldirish
-            for (let i = 0; i < availableDrivers.length; i++) {
-                if (availableDrivers[i].driverId) {
-                    const driver = await Driver.findById(availableDrivers[i].driverId).select("-__v");
-                    if (driver) {
-                        availableDrivers[i].driverId = {
-                            _id: driver._id,
-                            firstName: driver.firstName,
-                            lastName: driver.lastName,
-                            phoneNumber: driver.phoneNumber,
-                            car: driver.car,
-                            birthDate: driver.birthDate,
-                            balance: driver.balance,
-                            isActive: driver.isActive,
-                        };
-                    }
-                }
-            }
+                    const driver = await Driver.findById(d.driverId).select("-__v");
+                    return driver
+                        ? {
+                            ...d,
+                            driverId: {
+                                _id: driver._id,
+                                firstName: driver.firstName,
+                                lastName: driver.lastName,
+                                phoneNumber: driver.phoneNumber,
+                                car: driver.car,
+                                birthDate: driver.birthDate,
+                                balance: driver.balance,
+                                isActive: driver.isActive,
+                            }
+                        }
+                        : d;
+                })
+            );
 
             const responseData = {
                 status: "availableDrivers",
@@ -135,6 +138,7 @@ class OrderController {
             return response.serverError(res, "Server xatosi");
         }
     }
+
 
     async assignDriverByClient(req, res) {
         try {
@@ -277,7 +281,6 @@ class OrderController {
         try {
             const { orderId, driverId } = req.body;
 
-
             if (!orderId || !driverId) {
                 return response.error(res, "orderId va driverId majburiy!");
             }
@@ -320,14 +323,13 @@ class OrderController {
 
             // 7️⃣ Redisga real-time uchun yozamiz
             await this.redisClient.set(
-                `order:${orderId}`,
+                `active_order:${orderId}`,
                 JSON.stringify(savedOrder),
                 { EX: 60 * 60 } // 1 soat
             );
 
             // 8️⃣ Socket orqali client va drayverga yuborish
-            this.io.to(order.clientId.toString()).emit("availableDriversUpdate", savedOrder);
-            this.io.to(driverId.toString()).emit("youAreAssigned", savedOrder);
+            this.io.emit("availableDriversUpdate", savedOrder);
 
             return response.success(res, "Driver muvaffaqiyatli assign qilindi", savedOrder);
 
