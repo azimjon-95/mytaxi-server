@@ -13,6 +13,15 @@ const orderSchema = new mongoose.Schema({
         longitude: { type: Number, required: true },
     },
 
+    carType: { type: String, default: 'econom' }, // yangi qo‘shildi
+    service: { // yangi qo‘shildi
+        serviceId: { type: mongoose.Schema.Types.ObjectId, ref: "Service" },
+        value: { type: String },
+        price: { type: Number },
+        createdAt: { type: Date },
+        updatedAt: { type: Date }
+    },
+
     availableDrivers: [
         {
             driverId: { type: mongoose.Schema.Types.ObjectId, ref: "Driver" },

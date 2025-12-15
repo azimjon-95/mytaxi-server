@@ -1,4 +1,5 @@
 const Order = require("../models/Order");
+const User = require("../models/clinetModel");
 const Driver = require("../models/driverModel");
 const response = require("../utils/response");
 const mongoose = require("mongoose");
@@ -343,7 +344,6 @@ class OrderController {
     async create(req, res) {
         try {
             const { when } = req.body;
-
             // Boshlang‘ich status va timeline
             let initialStatus = "created";
             let timeline = [{ stage: "created", timestamp: new Date() }];
@@ -401,45 +401,6 @@ class OrderController {
             return response.error(res, err.message);
         }
     }
-
-    // Driver selects an order  // Del
-    async selectDriver(req, res) {
-        try {
-            const { orderId, driverId, model, carNumber, color, phone, latitude, longitude } = req.body;
-
-            const order = await Order.findById(orderId);
-            if (!order) return response.notFound(res, "Order not found");
-
-            if (!["created", "waiting"].includes(order.status))
-                return response.warning(res, "Order cannot be selected");
-
-            // Driver mavjudmi?
-            if (order.availableDrivers.some(d => d.driverId.toString() === driverId))
-                return response.warning(res, "Driver already selected");
-
-            const distance = calculateDistance(
-                latitude, longitude,
-                order.location.latitude, order.location.longitude
-            );
-
-            const eta = calculateETA(distance);
-
-            const driverInfo = { driverId, model, carNumber, color, phone, distance, eta };
-
-            order.availableDrivers.push(driverInfo);
-            await order.save();
-
-            this.io.emit("order_driver_updated", {
-                orderId,
-                availableDrivers: order.availableDrivers
-            });
-
-            return response.success(res, "Driver selected", driverInfo);
-        } catch (err) {
-            return response.error(res, err.message);
-        }
-    }
-
 
     // Update the meter for an order
     async updateMeter(req, res) {
@@ -684,35 +645,6 @@ class OrderController {
         }
     }
 
-    // CANCEL order
-    async cancel(req, res) {
-        try {
-            const { id } = req.params;
-            const { cancelledBy, reason } = req.body;
-
-            const order = await Order.findById(id);
-            if (!order) return response.notFound(res, "Order not found");
-
-            if (["created", "waiting", "driver_assigned"].includes(order.status)) {
-                order.status = "cancelled";
-                order.cancelledBy = cancelledBy || "client";
-                order.cancelReason = reason || "Order cancelled";
-                order.timeline.push({ stage: "cancelled", driverId: order.driver?.driverId || null });
-
-                await order.save();
-                await this.redisClient.set(`order:${id}`, JSON.stringify(order), { EX: 60 * 5 });
-
-                // Socket: driver va clientga notify
-                this.io.emit("order_cancelled", order);
-
-                return response.success(res, "Order cancelled", order);
-            } else {
-                return response.warning(res, "Order cannot be cancelled at this stage");
-            }
-        } catch (err) {
-            return response.error(res, err.message);
-        }
-    }
 
     // DELETE order
     async delete(req, res) {
@@ -727,6 +659,87 @@ class OrderController {
             return response.error(res, err.message);
         }
     }
+
+    // CANCEL order
+    async cancelOrder(req, res) {
+        try {
+            const { orderId } = req.params;
+            const { cancelledBy, cancelReason } = req.body;
+
+            if (!["client", "driver", "admin"].includes(cancelledBy)) {
+                return response.notFound(res, "cancelledBy noto‘g‘ri!");
+            }
+
+            const order = await Order.findById(orderId);
+            if (!order) return response.notFound(res, "Zakaz topilmadi!");
+
+            if (["completed", "cancelled"].includes(order.status)) {
+                return response.notFound(res, "Bu zakazni bekor qilib bo‘lmaydi!");
+            }
+
+            // 🟢 AGAR CLIENT BEKOR QILGAN BO'LSA → CASHBACK -2000
+            if (cancelledBy === "client") {
+                const user = await User.findById(order.clientId);
+                if (user) {
+                    const minusSum = 2000;
+                    user.cashback = Math.max(0, (user.cashback || 0) - minusSum);
+                    await user.save();
+                }
+            }
+
+            // 🔴 Zakazni bekor qilish
+            order.status = "cancelled";
+            order.cancelledBy = cancelledBy;
+            order.cancelReason = cancelReason || "Izoh berilmagan";
+
+            order.timeline.push({
+                stage: "cancelled",
+                driverId: order?.driver?.driverId || null,
+            });
+
+            await order.save();
+
+            // =============================
+            //    REDIS — CACHE TOZALASH
+            // =============================
+
+            if (this.redisClient) {
+                try {
+                    // 1️⃣ Order cache
+                    await this.redisClient.del(`order:${orderId}`);
+
+                    // 2️⃣ Available Drivers cache
+                    await this.redisClient.del(`active_order:${orderId}`);
+
+                    // 3️⃣ Driver aktiv zakazi
+                    if (order.driver?.driverId) {
+                        await this.redisClient.del(`driver:${order.driver.driverId}:currentOrder`);
+                    }
+
+                    // 4️⃣ Client aktiv zakazi
+                    await this.redisClient.del(`user:${order.clientId}:currentOrder`);
+                } catch (redisErr) {
+                    console.error("❗ Redis clear error:", redisErr);
+                }
+            }
+
+            // SOCKET event
+            if (this.io) {
+                this.io.emit("availableDriversUpdate", order);
+                if (order.driver?.driverId) {
+                    this.io
+                        .emit("availableDriversUpdate", order);
+                }
+            }
+
+            return response.success(res, "Zakaz bekor qilindi!", order);
+
+        } catch (err) {
+            console.error("Cancel Order Error:", err);
+            return response.serverError(res, "Server xatosi!");
+        }
+    }
+
 }
 
 module.exports = OrderController;

@@ -1,4 +1,4 @@
-const Driver = require("../models/driverModel");
+const { Driver } = require("../models/driverModel");
 const response = require("../utils/response");
 const jwt = require("jsonwebtoken");
 
@@ -28,32 +28,58 @@ class DriverController {
         try {
             const { login, password } = req.body;
 
-            const driver = await Driver.findOne({ login, password });
-            if (!driver) return response.notFound(res, "Driver not found");
+            // Population bilan driverni topamiz
+            const driver = await Driver.findOne({ login, password })
+                .populate({
+                    path: 'car.carType',
+                    select: 'label value level price isActive' // kerakli fieldlarni tanlaymiz
+                })
+                .populate({
+                    path: 'additionalServices',
+                    select: 'value price'
+                });
 
+            if (!driver) {
+                return response.notFound(res, "Driver not found");
+            }
 
-            // JWT token
+            // JWT token yaratamiz
             const token = jwt.sign(
                 { id: driver._id, login: driver.login },
                 process.env.JWT_SECRET || "secret",
                 { expiresIn: "1d" }
             );
 
-            return response.success(res, "Login successful", { driver, token });
+            // Population qilingan driver ma'lumotlarini yuboramiz
+            return response.success(res, "Login successful", {
+                driver,
+                token
+            });
+
         } catch (err) {
             return response.serverError(res, err.message);
         }
     }
 
-    // READ ALL DRIVERS
+    // READ ALL DRIVERS// READ ALL DRIVERS
     async getAll(req, res) {
         try {
-            const drivers = await Driver.find();
+            const drivers = await Driver.find()
+                .populate({
+                    path: "additionalServices",
+                    model: "AdditionalService", // model nomi
+                })
+                .populate({
+                    path: "car.carType",
+                    model: "CarType", // model nomi
+                });
+
             return response.success(res, "Drivers fetched successfully", drivers);
         } catch (err) {
             return response.serverError(res, err.message);
         }
     }
+
 
     // READ SINGLE DRIVER
     async getById(req, res) {
@@ -67,12 +93,35 @@ class DriverController {
     }
 
     // UPDATE DRIVER
+    // UPDATE DRIVER
     async update(req, res) {
         try {
-            const driver = await Driver.findByIdAndUpdate(req.params.id, req.body, { new: true });
-            if (!driver) return response.notFound(res, "Driver not found");
+            // Avval driver ni yangilaymiz
+            const updatedDriver = await Driver.findByIdAndUpdate(
+                req.params.id,
+                req.body,
+                { new: true, runValidators: true } // new: true - yangilangan documentni qaytaradi
+            );
 
+            if (!updatedDriver) {
+                return response.notFound(res, "Driver not found");
+            }
+
+            // Endi yangilangan driver ni populate qilib qayta o‘qiymiz
+            const driver = await Driver.findById(updatedDriver._id)
+                .populate({
+                    path: "additionalServices",
+                    model: "AdditionalService",
+                })
+                .populate({
+                    path: "car.carType",
+                    model: "CarType",
+                });
+
+            // Redis cache ni yangilash
             await this.redisClient.set(`driver:${driver._id}`, JSON.stringify(driver));
+
+            // Real-time update yuborish
             this.io.emit("driverUpdated", driver);
 
             return response.success(res, "Driver updated successfully", driver);

@@ -1,13 +1,18 @@
 const express = require("express");
 const UserController = require("../controllers/userController");
 const OrderController = require("../controllers/orderController");
+const MainOrderController = require("../controllers/mainGetOrderCtrl");
 const DriverController = require("../controllers/driverController");
+const ConfigController = require("../controllers/configController");
+const upload = require("../middleware/upload");
 
 module.exports = (redisClient, io) => {
     // Controllers
     const userCtrl = new UserController(redisClient, io);
     const orderCtrl = new OrderController(redisClient, io);
     const driverCtrl = new DriverController(redisClient, io);
+    const configCtrl = new ConfigController(redisClient, io);
+    const MainGetOrder = new MainOrderController(redisClient, io);
 
     // ====================== PUBLIC ROUTES ======================
     const publicRouter = express.Router();
@@ -22,8 +27,10 @@ module.exports = (redisClient, io) => {
     publicRouter.get("/orders", (req, res) => orderCtrl.getAll(req, res));
     publicRouter.get("/orders/:id", (req, res) => orderCtrl.getById(req, res));
     publicRouter.put("/orders/:id", (req, res) => orderCtrl.update(req, res));
-    publicRouter.post("/orders/:id/cancel", (req, res) => orderCtrl.cancel(req, res));
     publicRouter.delete("/orders/:id", (req, res) => orderCtrl.delete(req, res));
+
+    // --- MainGetOrder routes ---
+    publicRouter.get("/main/orders/:driverId", (req, res) => MainGetOrder.getOrderByDriverId(req, res));
 
     // --- Driver routes ---
     publicRouter.post("/driver/login", (req, res) => driverCtrl.login(req, res));
@@ -33,6 +40,21 @@ module.exports = (redisClient, io) => {
     publicRouter.put("/driver/:id", (req, res) => driverCtrl.update(req, res));
     publicRouter.delete("/driver/:id", (req, res) => driverCtrl.delete(req, res));
 
+    // 🚗 CAR TYPE
+    publicRouter.post(
+        "/config/car-types",
+        upload.single("image"),       // 🔥 rasmni handle qiladi
+        (req, res) => configCtrl.createCarType(req, res)
+    );
+    publicRouter.get("/config/car-types", (req, res) => configCtrl.getCarTypes(req, res));
+    publicRouter.put("/config/car-types/:id", (req, res) => configCtrl.updateCarType(req, res));
+    publicRouter.delete("/config/car-types/:id", (req, res) => configCtrl.deleteCarType(req, res));
+
+    // 🔥 SERVICES
+    publicRouter.post("/config/services", (req, res) => configCtrl.createService(req, res));
+    publicRouter.get("/config/services", (req, res) => configCtrl.getServices(req, res));
+    publicRouter.put("/config/services/:id", (req, res) => configCtrl.updateService(req, res));
+    publicRouter.delete("/config/services/:id", (req, res) => configCtrl.deleteService(req, res));
     // ====================== PROTECTED ROUTES ======================
     const protectedRouter = express.Router();
 
@@ -42,7 +64,6 @@ module.exports = (redisClient, io) => {
     protectedRouter.delete("/client/:phone", (req, res) => userCtrl.deleteUser(req, res));
 
     // --- Order protected routes ---
-    // protectedRouter.post("/orders/select-driver", (req, res) => orderCtrl.selectDriver(req, res));
     protectedRouter.post("/orders/assign-driver", (req, res) => orderCtrl.assignDriverByClient(req, res));
     protectedRouter.post("/orders/start-meter", (req, res) => orderCtrl.startMeter(req, res));
     protectedRouter.post("/orders/complete", (req, res) => orderCtrl.completeOrder(req, res));
@@ -50,6 +71,7 @@ module.exports = (redisClient, io) => {
     protectedRouter.get("/orders/live/:clientId", (req, res) => orderCtrl.watchActiveOrder(req, res));
     protectedRouter.get("/orders/drivers/:clId/:orId", (req, res) => orderCtrl.getAvailableDrivers(req, res));
     protectedRouter.post("/orders/select-driver", (req, res) => orderCtrl.assignDriver(req, res));
+    protectedRouter.post("/orders/cancel/:orderId", (req, res) => orderCtrl.cancelOrder(req, res));
 
     return { publicRouter, protectedRouter };
 };
