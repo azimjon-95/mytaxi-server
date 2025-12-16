@@ -31,6 +31,9 @@ module.exports = (redisClient, io) => {
 
     // --- MainGetOrder routes ---
     publicRouter.get("/main/orders/:driverId", (req, res) => MainGetOrder.getOrderByDriverId(req, res));
+    publicRouter.patch("/driver/toggle/:driverId", (req, res) => MainGetOrder.toggleActive(req, res));
+    publicRouter.post("/main/driver/location", (req, res) => MainGetOrder.setLocationRedis(req, res));
+    publicRouter.get("/main/driver/location/:driverId", (req, res) => MainGetOrder.getLocationRedis(req, res));
 
     // --- Driver routes ---
     publicRouter.post("/driver/login", (req, res) => driverCtrl.login(req, res));

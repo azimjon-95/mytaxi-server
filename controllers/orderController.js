@@ -1,9 +1,9 @@
 const Order = require("../models/Order");
 const User = require("../models/clinetModel");
 const Driver = require("../models/driverModel");
+const { getDistanceFromGraphHopper } = require("../service/getDistanceFromGraphHopper");
 const response = require("../utils/response");
 const mongoose = require("mongoose");
-const axios = require('axios');
 require('dotenv').config();
 
 // distance va ETA helpers
@@ -144,6 +144,8 @@ class OrderController {
     async assignDriverByClient(req, res) {
         try {
             const { orderId, driverId, driverLocation, clientLocation } = req.body;
+            console.log(orderId, driverId, driverLocation, clientLocation);
+
 
             if (!orderId || !driverId || !driverLocation || !clientLocation) {
                 return response.error(res, "Missing required fields");
@@ -154,13 +156,10 @@ class OrderController {
             if (activeOrder) {
                 activeOrder = JSON.parse(activeOrder);
             } else {
-                // Redis’da topilmasa MongoDB’dan olish
                 const orderFromDB = await Order.findById(orderId);
                 if (!orderFromDB) return response.notFound(res, "Order not found from Redis and DB");
-
                 activeOrder = orderFromDB.toObject();
 
-                // Redis’ga saqlash (expire vaqti 30 daqiqa, ixtiyoriy)
                 await this.redisClient.set(
                     `active_order:${orderId}`,
                     JSON.stringify(activeOrder),
@@ -169,37 +168,28 @@ class OrderController {
                 );
             }
 
-            // 2️⃣ MASOFA VA ETA HISOBLASH (OSRM)
-            const startLocation = driverLocation;
-            const endLocation = clientLocation;
-            const url = `${process.env.OSRM_URL}/route/v1/driving/${startLocation.longitude},${startLocation.latitude};${endLocation.longitude},${endLocation.latitude}?overview=false`;
+            // 2️⃣ MASOFA VA ETA HISOBLASH (GraphHopper)
+            const routeInfo = await getDistanceFromGraphHopper(driverLocation, clientLocation);
+            if (!routeInfo) return response.error(res, "Cannot calculate route");
 
-            // const { data } = await axios.get(url);
-            // if (!data?.routes?.length) {
-            //     return response.error(res, "Cannot calculate route");
-            // }
-
-            const route = [];
-            const distance = Number((route.distance / 1000).toFixed(1));  // km
-            const eta = Math.round(route.duration / 60); // minutes
+            const { distanceKm, durationMin } = routeInfo;
 
             // 3️⃣ DRIVER MA'LUMOTINI DB DAN OLISH
             const driver = await Driver.findById(driverId);
             if (!driver) return response.notFound(res, "Driver not found");
 
-            // 5️⃣ AVAILABLE DRIVERS GA QO‘SHISH
+            // 4️⃣ AVAILABLE DRIVERS GA QO‘SHISH
             const newDriver = {
                 driverId,
                 modelName: driver.car ? `${driver.car.make} ${driver.car.modelName}` : "Unknown",
                 plateNumber: driver.car?.plateNumber || "Unknown",
                 color: driver.car?.color || "Unknown",
                 phone: driver.phone,
-                distance: 1,
-                eta: 3,
+                distance: distanceKm,
+                eta: durationMin,
                 timestamp: new Date(),
             };
 
-            // MongoDB order’ga qo‘shish
             const order = await Order.findById(orderId);
             order.availableDrivers.push(newDriver);
             await order.save();
@@ -208,7 +198,8 @@ class OrderController {
                 .populate({
                     path: 'availableDrivers.driverId',
                 });
-            // Redis ham yangilash
+
+            // Redis yangilash
             await this.redisClient.set(
                 `active_order:${orderId}`,
                 JSON.stringify(order.toObject()),
@@ -225,6 +216,91 @@ class OrderController {
             return response.serverError(res, "Server Error", err.message);
         }
     }
+
+    // async assignDriverByClient(req, res) {
+    //     try {
+    //         const { orderId, driverId, driverLocation, clientLocation } = req.body;
+
+    //         if (!orderId || !driverId || !driverLocation || !clientLocation) {
+    //             return response.error(res, "Missing required fields");
+    //         }
+
+    //         // 1️⃣ ORDER REDISDAN TEKSHIRILADI
+    //         let activeOrder = await this.redisClient.get(`active_order:${orderId}`);
+    //         if (activeOrder) {
+    //             activeOrder = JSON.parse(activeOrder);
+    //         } else {
+    //             // Redis’da topilmasa MongoDB’dan olish
+    //             const orderFromDB = await Order.findById(orderId);
+    //             if (!orderFromDB) return response.notFound(res, "Order not found from Redis and DB");
+
+    //             activeOrder = orderFromDB.toObject();
+
+    //             // Redis’ga saqlash (expire vaqti 30 daqiqa, ixtiyoriy)
+    //             await this.redisClient.set(
+    //                 `active_order:${orderId}`,
+    //                 JSON.stringify(activeOrder),
+    //                 "EX",
+    //                 1800
+    //             );
+    //         }
+
+    //         // 2️⃣ MASOFA VA ETA HISOBLASH (OSRM)
+    //         const startLocation = driverLocation;
+    //         const endLocation = clientLocation;
+    //         const url = `${process.env.OSRM_URL}/route/v1/driving/${startLocation.longitude},${startLocation.latitude};${endLocation.longitude},${endLocation.latitude}?overview=false`;
+
+    //         // const { data } = await axios.get(url);
+    //         // if (!data?.routes?.length) {
+    //         //     return response.error(res, "Cannot calculate route");
+    //         // }
+
+    //         const route = [];
+    //         const distance = Number((route.distance / 1000).toFixed(1));  // km
+    //         const eta = Math.round(route.duration / 60); // minutes
+
+    //         // 3️⃣ DRIVER MA'LUMOTINI DB DAN OLISH
+    //         const driver = await Driver.findById(driverId);
+    //         if (!driver) return response.notFound(res, "Driver not found");
+
+    //         // 5️⃣ AVAILABLE DRIVERS GA QO‘SHISH
+    //         const newDriver = {
+    //             driverId,
+    //             modelName: driver.car ? `${driver.car.make} ${driver.car.modelName}` : "Unknown",
+    //             plateNumber: driver.car?.plateNumber || "Unknown",
+    //             color: driver.car?.color || "Unknown",
+    //             phone: driver.phone,
+    //             distance: 1,
+    //             eta: 3,
+    //             timestamp: new Date(),
+    //         };
+
+    //         // MongoDB order’ga qo‘shish
+    //         const order = await Order.findById(orderId);
+    //         order.availableDrivers.push(newDriver);
+    //         await order.save();
+
+    //         const populatedOrder = await Order.findById(orderId)
+    //             .populate({
+    //                 path: 'availableDrivers.driverId',
+    //             });
+    //         // Redis ham yangilash
+    //         await this.redisClient.set(
+    //             `active_order:${orderId}`,
+    //             JSON.stringify(order.toObject()),
+    //             "EX",
+    //             1800
+    //         );
+
+    //         this.io.emit("availableDriversUpdate", populatedOrder);
+
+    //         return response.success(res, "Driver added", newDriver);
+
+    //     } catch (err) {
+    //         console.error("ADD DRIVER ERROR:", err);
+    //         return response.serverError(res, "Server Error", err.message);
+    //     }
+    // }
 
     async watchActiveOrder(req, res) {
         try {
