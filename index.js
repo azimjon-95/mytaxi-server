@@ -4,6 +4,7 @@ const cors = require("cors");
 const helmet = require("helmet");
 const redis = require("redis");
 require("dotenv").config();
+const { startCleanupCron, setClients } = require("./cron/cleanupAvailableDrivers");
 
 const authMiddleware = require("./middleware/AuthMiddleware");
 const notfound = require("./middleware/notfound.middleware");
@@ -50,6 +51,9 @@ const io = require("./middleware/socket.header")(server);
 app.set("socket", io);
 soket.connect(io);
 
+// Cron-ga clientlarni ulash
+setClients({ redis: redisClient, socket: io });
+startCleanupCron();
 
 // ---- ROUTES ----
 const userRoutes = require("./routes/Routes")(redisClient, io);

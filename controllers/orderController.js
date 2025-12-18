@@ -1,6 +1,6 @@
 const Order = require("../models/Order");
 const User = require("../models/clinetModel");
-const Driver = require("../models/driverModel");
+const { Driver } = require("../models/driverModel");
 const { getDistanceFromGraphHopper } = require("../service/getDistanceFromGraphHopper");
 const response = require("../utils/response");
 const mongoose = require("mongoose");
@@ -140,24 +140,29 @@ class OrderController {
         }
     }
 
-
+    // new version
     async assignDriverByClient(req, res) {
         try {
             const { orderId, driverId, driverLocation, clientLocation } = req.body;
-            console.log(orderId, driverId, driverLocation, clientLocation);
 
+            const expireSeconds = 30; // ⏱️ 30 sekund
+            const expireAt = Date.now() + expireSeconds * 1000;
 
             if (!orderId || !driverId || !driverLocation || !clientLocation) {
                 return response.error(res, "Missing required fields");
             }
 
-            // 1️⃣ ORDER REDISDAN TEKSHIRILADI
+            /* ===================== 1️⃣ ORDER (REDIS → DB) ===================== */
             let activeOrder = await this.redisClient.get(`active_order:${orderId}`);
+
             if (activeOrder) {
                 activeOrder = JSON.parse(activeOrder);
             } else {
                 const orderFromDB = await Order.findById(orderId);
-                if (!orderFromDB) return response.notFound(res, "Order not found from Redis and DB");
+                if (!orderFromDB) {
+                    return response.notFound(res, "Order not found");
+                }
+
                 activeOrder = orderFromDB.toObject();
 
                 await this.redisClient.set(
@@ -168,139 +173,81 @@ class OrderController {
                 );
             }
 
-            // 2️⃣ MASOFA VA ETA HISOBLASH (GraphHopper)
-            const routeInfo = await getDistanceFromGraphHopper(driverLocation, clientLocation);
-            if (!routeInfo) return response.error(res, "Cannot calculate route");
+            /* ===================== 2️⃣ MASOFA & ETA ===================== */
+            const routeInfo = await getDistanceFromGraphHopper(
+                driverLocation,
+                clientLocation
+            );
 
-            const { distanceKm, durationMin } = routeInfo;
+            if (!routeInfo) {
+                return response.error(res, "Cannot  route");
+            }
 
-            // 3️⃣ DRIVER MA'LUMOTINI DB DAN OLISH
+            const { distanceKm = 0, durationMin = 0 } = routeInfo;
+
+            /* ===================== 3️⃣ DRIVER ===================== */
             const driver = await Driver.findById(driverId);
-            if (!driver) return response.notFound(res, "Driver not found");
+            if (!driver) {
+                return response.notFound(res, "Driver not found");
+            }
 
-            // 4️⃣ AVAILABLE DRIVERS GA QO‘SHISH
+            /* ===================== 4️⃣ NEW DRIVER (expireAt bilan) ===================== */
             const newDriver = {
                 driverId,
-                modelName: driver.car ? `${driver.car.make} ${driver.car.modelName}` : "Unknown",
+                modelName: driver.car
+                    ? `${driver.car.make} ${driver.car.modelName}`
+                    : "Unknown",
                 plateNumber: driver.car?.plateNumber || "Unknown",
                 color: driver.car?.color || "Unknown",
                 phone: driver.phone,
                 distance: distanceKm,
                 eta: durationMin,
-                timestamp: new Date(),
+                expireAt // 🔥 MUHIM
             };
 
+            /* ===================== 5️⃣ ORDERGA QO‘SHISH ===================== */
             const order = await Order.findById(orderId);
-            order.availableDrivers.push(newDriver);
-            await order.save();
 
+            const alreadyExists = order.availableDrivers.some(
+                d => d.driverId.toString() === driverId
+            );
+
+            if (!alreadyExists) {
+                order.availableDrivers.push(newDriver);
+                await order.save();
+            }
+
+            /* ===================== 6️⃣ REDIS TTL (har driver uchun) ===================== */
+            await this.redisClient.set(
+                `expire:order:${orderId}:driver:${driverId}`,
+                "1",
+                "EX",
+                expireSeconds
+            );
+
+            /* ===================== 7️⃣ POPULATE + REDIS UPDATE ===================== */
             const populatedOrder = await Order.findById(orderId)
-                .populate({
-                    path: 'availableDrivers.driverId',
-                });
+                .populate("availableDrivers.driverId");
 
-            // Redis yangilash
             await this.redisClient.set(
                 `active_order:${orderId}`,
-                JSON.stringify(order.toObject()),
+                JSON.stringify(populatedOrder.toObject()),
                 "EX",
                 1800
             );
 
             this.io.emit("availableDriversUpdate", populatedOrder);
 
-            return response.success(res, "Driver added", newDriver);
+            return response.success(res, "Driver added (TTL + cron)", newDriver);
 
         } catch (err) {
-            console.error("ADD DRIVER ERROR:", err);
+            console.error("ASSIGN DRIVER ERROR:", err);
             return response.serverError(res, "Server Error", err.message);
         }
     }
 
-    // async assignDriverByClient(req, res) {
-    //     try {
-    //         const { orderId, driverId, driverLocation, clientLocation } = req.body;
 
-    //         if (!orderId || !driverId || !driverLocation || !clientLocation) {
-    //             return response.error(res, "Missing required fields");
-    //         }
 
-    //         // 1️⃣ ORDER REDISDAN TEKSHIRILADI
-    //         let activeOrder = await this.redisClient.get(`active_order:${orderId}`);
-    //         if (activeOrder) {
-    //             activeOrder = JSON.parse(activeOrder);
-    //         } else {
-    //             // Redis’da topilmasa MongoDB’dan olish
-    //             const orderFromDB = await Order.findById(orderId);
-    //             if (!orderFromDB) return response.notFound(res, "Order not found from Redis and DB");
-
-    //             activeOrder = orderFromDB.toObject();
-
-    //             // Redis’ga saqlash (expire vaqti 30 daqiqa, ixtiyoriy)
-    //             await this.redisClient.set(
-    //                 `active_order:${orderId}`,
-    //                 JSON.stringify(activeOrder),
-    //                 "EX",
-    //                 1800
-    //             );
-    //         }
-
-    //         // 2️⃣ MASOFA VA ETA HISOBLASH (OSRM)
-    //         const startLocation = driverLocation;
-    //         const endLocation = clientLocation;
-    //         const url = `${process.env.OSRM_URL}/route/v1/driving/${startLocation.longitude},${startLocation.latitude};${endLocation.longitude},${endLocation.latitude}?overview=false`;
-
-    //         // const { data } = await axios.get(url);
-    //         // if (!data?.routes?.length) {
-    //         //     return response.error(res, "Cannot calculate route");
-    //         // }
-
-    //         const route = [];
-    //         const distance = Number((route.distance / 1000).toFixed(1));  // km
-    //         const eta = Math.round(route.duration / 60); // minutes
-
-    //         // 3️⃣ DRIVER MA'LUMOTINI DB DAN OLISH
-    //         const driver = await Driver.findById(driverId);
-    //         if (!driver) return response.notFound(res, "Driver not found");
-
-    //         // 5️⃣ AVAILABLE DRIVERS GA QO‘SHISH
-    //         const newDriver = {
-    //             driverId,
-    //             modelName: driver.car ? `${driver.car.make} ${driver.car.modelName}` : "Unknown",
-    //             plateNumber: driver.car?.plateNumber || "Unknown",
-    //             color: driver.car?.color || "Unknown",
-    //             phone: driver.phone,
-    //             distance: 1,
-    //             eta: 3,
-    //             timestamp: new Date(),
-    //         };
-
-    //         // MongoDB order’ga qo‘shish
-    //         const order = await Order.findById(orderId);
-    //         order.availableDrivers.push(newDriver);
-    //         await order.save();
-
-    //         const populatedOrder = await Order.findById(orderId)
-    //             .populate({
-    //                 path: 'availableDrivers.driverId',
-    //             });
-    //         // Redis ham yangilash
-    //         await this.redisClient.set(
-    //             `active_order:${orderId}`,
-    //             JSON.stringify(order.toObject()),
-    //             "EX",
-    //             1800
-    //         );
-
-    //         this.io.emit("availableDriversUpdate", populatedOrder);
-
-    //         return response.success(res, "Driver added", newDriver);
-
-    //     } catch (err) {
-    //         console.error("ADD DRIVER ERROR:", err);
-    //         return response.serverError(res, "Server Error", err.message);
-    //     }
-    // }
 
     async watchActiveOrder(req, res) {
         try {
@@ -437,15 +384,33 @@ class OrderController {
             });
 
             await order.save();
+            // ClientId ni populate qilamiz
+            const populatedOrder = await Order.findById(order._id).populate("clientId");
 
             // Redis-ga saqlash (1 soatga)
-            if (order._id) {
-                await this.redisClient.set(
-                    `active_order:${order._id}`,
-                    JSON.stringify(order),
-                    "EX",
-                    60 * 60 // 1 soat
-                );
+            if (populatedOrder && populatedOrder._id) {
+                // 🔹 Redisdan eski ordersni olish
+                const cacheKey = "active_order";
+                const cachedData = await this.redisClient.get(cacheKey);
+
+                let orders = [];
+                if (cachedData) {
+                    try {
+                        orders = JSON.parse(cachedData);
+                        if (!Array.isArray(orders)) {
+                            orders = [orders]; // agar eski data object bo‘lsa, arrayga o‘rash
+                        }
+                    } catch (err) {
+                        console.error("Error parsing Redis data:", err);
+                        orders = [];
+                    }
+                }
+
+                // 🔹 Yangi orderni arrayga qo‘shish
+                orders.push(populatedOrder);
+
+                // 🔹 Redis-ga saqlash (1 soatga)
+                await this.redisClient.set(cacheKey, JSON.stringify(orders), "EX", 60 * 60);
             }
 
             // Socket.io orqali xabar yuborish

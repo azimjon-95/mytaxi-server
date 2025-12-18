@@ -1,5 +1,6 @@
 const Order = require("../models/Order");
-const { Driver } = require("../models/driverModel");
+const User = require("../models/clinetModel");
+const { Driver, AdditionalService } = require("../models/driverModel");
 const response = require("../utils/response");
 const DriverLocationService = require("../service/driverLocationService");
 const { getDistanceFromGraphHopper } = require("../service/getDistanceFromGraphHopper");
@@ -38,37 +39,104 @@ class MainOrderController {
                     message: "Siz active emassiz",
                     orders: [],
                 };
-                this.io.emit(`driver:${driverId}`, inactivePayload);
+                this.io.emit(`new_order`, inactivePayload);
                 return response.success(res, "Driver inactive", inactivePayload);
             }
 
             // 🔹 Redisdan tekshirish
-            const cacheKey = `active_order:${driverId}`;
+            const cacheKey = `active_order`;
             const cachedOrders = await this.redisClient.get(cacheKey);
-
             if (cachedOrders) {
+                const orders = JSON.parse(cachedOrders);
+
+                if (!orders) {
+                    // Agar orders bo‘sh bo‘lsa, hech narsa yubormaymiz
+                    return response.success(res, "No active orders", {
+                        isActive: true,
+                        orders: [],
+                        driverLocation: allDriverLocations,
+                    });
+                }
+                const services = await AdditionalService.find().lean();
+
+                // Tezkor lookup uchun map
+                const serviceMap = new Map(
+                    services.map(s => [String(s._id), s])
+                );
+
+                // await Service.find();
+                const preparedOrders = await Promise.all(
+                    orders.map(async (order) => {
+                        const distanceKm = await getDistanceFromGraphHopper(
+                            allDriverLocations,
+                            order.location
+                        );
+
+                        let populatedService = null;
+
+                        if (order.service?.serviceId) {
+                            populatedService = serviceMap.get(
+                                String(order.service.serviceId)
+                            ) || null;
+                        }
+
+                        return {
+                            ...order,
+                            service: order.service
+                                ? {
+                                    ...order.service,
+                                    serviceId: populatedService, // 🔥 SHU YERDA JOYLANDI
+                                }
+                                : null,
+                            distance: distanceKm
+                                ? Math.floor(distanceKm.distanceKm)
+                                : null
+                        };
+                    })
+                );
+                // const preparedOrders = await Promise.all(
+                //     orders.map(async (order) => {
+                //         const distanceKm = await getDistanceFromGraphHopper(
+                //             allDriverLocations,
+                //             order.location
+                //         );
+                //         return {
+                //             ...order,
+                //             distance: distanceKm ? Math.floor(distanceKm.distanceKm) : null
+                //         };
+                //     })
+                // );
+
                 const payload = {
                     isActive: true,
-                    orders: JSON.parse(cachedOrders),
+                    orders: preparedOrders, // ✅ ARRAY
                     driverLocation: allDriverLocations,
                 };
+
+                this.io.emit(`new_order`, payload);
                 return response.success(res, "Orders fetched (cache)", payload);
             }
+
+
 
             // 🔹 Orderlarni olish
             const orders = await Order.find({
                 status: { $in: ["created", "waiting", "driver_assigned"] },
             })
-                .populate({ path: "clientId" })
+                .populate("clientId")
+                .populate({
+                    path: "service.serviceId",
+                    model: "Service",
+                })
                 .sort({ createdAt: -1 })
                 .lean();
+
 
             // 🔹 Har bir orderga masofani hisoblash (OSRM orqali)
             const ordersWithDistance = await Promise.all(
                 orders.map(async (order) => {
                     const clientLocation = order.location;
                     const distanceKm = await getDistanceFromGraphHopper(allDriverLocations, clientLocation);
-                    console.log(distanceKm.distanceKm);
 
                     return {
                         ...order,
@@ -76,11 +144,10 @@ class MainOrderController {
                     };
                 })
             );
+            console.log(ordersWithDistance);
 
-            // 🔹 Redisga saqlash (30 sekund)
-            await this.redisClient.set(
-                cacheKey,
-                JSON.stringify(ordersWithDistance),
+            await this.redisClient.set(`active_order`, JSON.stringify(ordersWithDistance),
+                "EX",
                 { EX: 30 }
             );
 
@@ -91,7 +158,7 @@ class MainOrderController {
                 driverLocation: allDriverLocations,
             };
 
-            this.io.emit(`driver:${driverId}`, payload);
+            this.io.emit(`new_order`, payload);
 
             return response.success(res, "Orders fetched", payload);
 
@@ -156,6 +223,8 @@ class MainOrderController {
     setLocationRedis = async (req, res) => {
         try {
             const { driverId } = req.body;
+            const { latitude, longitude } = req.body;
+            console.log(latitude, longitude);
 
             if (!driverId || latitude == null || longitude == null) {
                 return response.badRequest(res, "DriverId, latitude and longitude required");

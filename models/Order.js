@@ -13,7 +13,11 @@ const orderSchema = new mongoose.Schema({
         longitude: { type: Number, required: true },
     },
 
-    carType: { type: String, default: 'econom' }, // yangi qo‘shildi
+    carType: {
+        carTypeId: { type: mongoose.Schema.Types.ObjectId, ref: "CarType" },
+        label: { type: String },
+        price: { type: Number }
+    },
     service: { // yangi qo‘shildi
         serviceId: { type: mongoose.Schema.Types.ObjectId, ref: "Service" },
         value: { type: String },
@@ -32,6 +36,7 @@ const orderSchema = new mongoose.Schema({
             distance: { type: Number },  // mashinadan mijozgacha km
             eta: { type: Number },       // taxminiy yetib borish vaqti (min)
             timestamp: { type: Date, default: Date.now },
+            expireAt: { type: Number } // 🔥 MUHIM (timestamp, ms)
         }
     ],
 
