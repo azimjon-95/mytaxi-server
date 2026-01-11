@@ -2,10 +2,11 @@
   "name": "server",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "dist/index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "nodemon index.js"
+    "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js"
   },
   "keywords": [],
   "author": "",
@@ -22,9 +23,18 @@
     "mongoose": "^9.0.0",
     "multer": "^2.0.2",
     "node-cron": "^4.2.1",
-    "node-fetch": "^3.3.2",
-    "nodemon": "^3.1.11",
     "redis": "^5.10.0",
     "socket.io": "^4.8.1"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/form-data": "^2.2.1",
+    "@types/helmet": "^0.0.48",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/multer": "^2.0.0",
+    "@types/node": "^25.0.5",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.9.3"
   }
 }
