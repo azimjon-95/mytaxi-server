@@ -17,7 +17,7 @@ import buildRoutes from "./routes/Routes";
 dotenv.config();
 
 const app = express();
-const PORT = Number(process.env.PORT ?? 5000);
+const PORT = Number(process.env.PORT ?? 5054);
 
 // ---- MIDDLEWARE ----
 const corsOptions: CorsOptions = {

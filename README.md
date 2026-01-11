@@ -1,22 +1,33 @@
-# MyTaxi Server
+# MyTaxi Server (TypeScript)
 
-🚖 Bu loyiha Node.js, Express, MongoDB, Redis va Socket.IO asosida ishlab chiqilgan Taxi transport monitoring va user management serveridir.
-
----
-
-## 🔹 Texnologiyalar
-
-- **Node.js & Express** – Backend server
-- **MongoDB** – Ma’lumotlar bazasi
-- **Redis** – Cache va real-time eventlar
-- **Socket.IO** – Real-time kommunikatsiya
-- **Docker & Docker Compose** – Loyiha containerizatsiyasi
+🚖 MyTaxi Server — Node.js (TypeScript), Express, MongoDB, Redis va Socket.IO asosida ishlab chiqilgan taxi buyurtmalarini boshqarish, driver location, real-time eventlar va user management uchun backend server.
 
 ---
 
-## 🔹 Docker orqali ishga tushirish
+## 1) Texnologiyalar
 
-1. `docker-compose.yml` orqali Redis va Redis Commander ishga tushirish:
+- Node.js + TypeScript
+- Express
+- MongoDB (Mongoose)
+- Redis (cache / TTL / realtime uchun)
+- Socket.IO (real-time)
+- Multer (rasm upload memoryStorage)
+- node-cron (availableDrivers cleanup)
+- Docker & Docker Compose (MongoDB, Redis, Redis Commander)
 
+---
+
+## 2) Talablar
+
+- Node.js: 20+ (WSL Ubuntu’da ham bo‘ladi)
+- npm
+- MongoDB + Redis (local yoki Docker orqali)
+
+---
+
+## 3) Loyihani local ishga tushirish (Ubuntu/WSL)
+
+### 3.1) Install
 ```bash
-docker compose up -d
+cd server
+npm install
